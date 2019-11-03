@@ -36,9 +36,9 @@ export TOP_PID=$$
 
 # Configure debug mode for testing this script. Set this value to blank "" for
 # running in the final functional mode on the Synology Task Scheduler.
-debugMode=""         # True final runtime mode for Synology.
+# debugMode=""         # True final runtime mode for Synology.
 # debugMode="Synology" # Test on Synology SSH prompt, console or redirect output.
-# debugMode="MacHome"  # Test on Mac at home, LAN connection to Synology.
+debugMode="MacHome"  # Test on Mac at home, LAN connection to Synology.
 # debugMode="MacAway"  # Test on Mac away from home, no connection to Synology.
 # debugMode="WinAway"  # In the jungle, the mighty jungle.
 
@@ -129,8 +129,8 @@ MaxComebackRetries=40
 # There are two values here: shortBounceDuration, used when certain issues
 # can be repaired with a fast bounce, and longBounceDuration, used when we are
 # trying to seriously split the stream into separate sections.
-shortBounceDuration=5
-longBounceDuration=135
+shortBounceDuration=3
+longBounceDuration=5
 
 # Set this global variable to a starting integer value. There is a possible
 # condition in the code if we are in test mode, where we might test the value
@@ -845,16 +845,78 @@ BounceTheStream()
     # live_on=false. Response is expected to be {"success":true}.
     logMessage "info" "Bouncing stream for $1 seconds"
     WebApiCall "entry.cgi?api=SYNO.SurveillanceStation.YoutubeLive&method=Save&version=1&live_on=false" >/dev/null
+
+    # GitHub issue #54 - In addition to stopping the stream, also use
+    # the YouTube API "transition" command to tell YouTube it's done.
+    #
+    # Only do this if we are trying to do the "longer/harder" bounce
+    # which intentionally splits the stream (as opposed to the short
+    # bounce which hopefully doesn't split the stream).
+    if [ $1 -ge $longBounceDuration ]
+    then
+      # First, authenticate with the YouTube API.
+      YouTubeApiAuth
+
+      # Retrieve the "id" field from liveBroadcasts API, so that our next API
+      # call can identify which video stream to update.
+      curlUrl="https://www.googleapis.com/youtube/v3/liveBroadcasts?part=snippet,contentDetails,status&broadcastType=persistent&mine=true&access_token=$accessToken"
+      liveBroadcastOutput=""
+      liveBroadcastOutput=$( curl -s -m 20 $curlUrl )
+      thisStreamId=""
+      thisStreamId=$(echo $liveBroadcastOutput | sed 's/"id"/\'$'\n&/g' | grep -m 1 "id" | cut -d '"' -f4)
+      logMessage "dbg" "thisStreamId: $thisStreamId"
+
+      # Debugging output. Only needed if you run into a nasty bug here.
+      # Leave deactivated most of the time.
+      logMessage "dbg" "liveBroadcastOutput results: $liveBroadcastOutput"
+
+      # Make sure the "id" field did not come back empty. 
+      if test -z "$thisStreamId" 
+      then
+        logMessage "err" "The variable thisStreamId came up empty. Error accessing YouTube API"
+        logMessage "err" "The liveBroadcastOutput was $( echo $liveBroadcastOutput | tr '\n' ' ' )"
+      else
+        # We got an ID we can use, so we can go ahead with using the
+        # YouTube "transition" API to set the stream's broadcastStatus to "complete".
+        curlUrl="https://www.googleapis.com/youtube/v3/liveBroadcasts/transition?broadcastStatus=complete&id=$thisStreamId&part=id&access_token=$accessToken"
+
+        # debugging message, remove before flight.
+        logMessage "dbg" "$curlUrl"
+
+# This worked in the Google test screen:       https://www.googleapis.com/youtube/v3/liveBroadcasts/transition?broadcastStatus=complete&id=Earv89e6IyM&part=id
+# This got "not found" when run from my code:  https://www.googleapis.com/youtube/v3/liveBroadcasts/transition?broadcastStatus=complete&id=Earv89e6IyM&part=id&access_token=xxxxxxxxx
+
+        bounceCommandOutput=""
+        bounceCommandOutput=$( curl -s -m 20 $curlUrl )
+
+        # Debugging output. Only needed if you run into a nasty bug here.
+        # Leave deactivated most of the time.
+        logMessage "dbg" "Bounce-Down Command output information: $bounceCommandOutput"
+
+        # Extract the actualEndTime which, if this was all successful, should
+        # theoretically be returned in the "snippet" section of the output
+        # from the bounce command, because the output is supposed to be a
+        # liveBroadcast resource.
+        actualEndTime=""
+        actualEndTime=$(echo $bounceCommandOutput | sed 's/"actualEndTime"/\'$'\n&/g' | grep -m 1 "actualEndTime" | cut -d '"' -f4)
+        logMessage "dbg" "actualEndTime: $actualEndTime"
+
+        if test -z "$actualEndTime" 
+        then
+          logMessage "err" "The variable actualEndTime came up empty. Error accessing YouTube API"
+          logMessage "err" "The bounceCommandOutput was $( echo $bounceCommandOutput | tr '\n' ' ' )"
+        fi
+      fi
+    fi
   else
     # In test mode, log something anyway.
     logMessage "info" "Bouncing stream for $1 seconds - Except we're not in a position where we can control the stream up/down state, so no stream bounce performed"
   fi
   
-  # Wait a while to make sure it is really turned off. The number passed in
-  # as parameter $1 will determine how long to wait. Short values will quickly
+  # Wait a while to make sure it is really turned off. The number passed in as
+  # parameter $1 will determine how long to wait. Short values will quickly
   # restart the stream, keeping the stream to be part of the same video on
-  # YouTube, and long values (not sure how long, but 100+ seconds seems to
-  # work in my experiments) will end the current stream and split it into a
+  # YouTube, and longer values will end the current stream and split it into a
   # different stream archive video segment on YouTube.
   logMessage "dbg" "Pausing for $1 seconds, after bringing down the stream, before bringing it up again"
   sleep $1
@@ -873,6 +935,61 @@ BounceTheStream()
   if [ -z "$debugMode" ] || [[ $debugMode == *"Home"* ]] || [[ $debugMode == *"Synology"* ]]
   then
     WebApiCall "entry.cgi?api=SYNO.SurveillanceStation.YoutubeLive&method=Save&version=1&live_on=true" >/dev/null
+
+    # GitHub issue #54 - In addition to starting the stream, also use
+    # the YouTube API "transition" command to tell YouTube it's live.
+    #
+    # Only do this if we are trying to do the "longer/harder" bounce
+    # which intentionally splits the stream (as opposed to the short
+    # bounce which hopefully doesn't split the stream).
+    if [ $1 -ge $longBounceDuration ]
+    then
+      # Re-retrieve the "id" field from liveBroadcasts API, so that our next
+      # API call can identify which video stream to update. I believe you need
+      # to re-retrieve the ID because what if the ID changed to a new ID now
+      # that you've bounced down and now you're bouncing up again?
+      curlUrl="https://www.googleapis.com/youtube/v3/liveBroadcasts?part=snippet,contentDetails,status&broadcastType=persistent&mine=true&access_token=$accessToken"
+      liveBroadcastOutput=""
+      liveBroadcastOutput=$( curl -s -m 20 $curlUrl )
+      thisStreamId=""
+      thisStreamId=$(echo $liveBroadcastOutput | sed 's/"id"/\'$'\n&/g' | grep -m 1 "id" | cut -d '"' -f4)
+      logMessage "dbg" "thisStreamId: $thisStreamId"
+
+      # Make sure the "id" field did not come back empty. 
+      if test -z "$thisStreamId" 
+      then
+        logMessage "err" "The variable thisStreamId came up empty. Error accessing YouTube API"
+        logMessage "err" "The liveBroadcastOutput was $( echo $liveBroadcastOutput | tr '\n' ' ' )"
+      else
+        # We got an ID we can use, so we can go ahead with using the YouTube
+        # "transition" API to set the broadcastStatus to "live".
+        curlUrl="https://www.googleapis.com/youtube/v3/liveBroadcasts/transition?broadcastStatus=live&id=$thisStreamId&part=id&access_token=$accessToken"
+
+        # debugging message, remove before flight.
+        logMessage "dbg" "$curlUrl"
+
+        bounceCommandOutput=""
+        bounceCommandOutput=$( curl -s -m 20 $curlUrl )
+
+        # Debugging output. Only needed if you run into a nasty bug here.
+        # Leave deactivated most of the time.
+        logMessage "dbg" "Bounce-Up Command output information: $bounceCommandOutput"
+
+        # Extract the actualStartTime which, if this was all successful,
+        # should theoretically be returned in the "snippet" section of the
+        # output from the bounce command, because the output is supposed to be
+        # a liveBroadcast resource.
+        actualStartTime=""
+        actualStartTime=$(echo $bounceCommandOutput | sed 's/"actualStartTime"/\'$'\n&/g' | grep -m 1 "actualStartTime" | cut -d '"' -f4)
+        logMessage "dbg" "actualStartTime: $actualStartTime"
+
+        if test -z "$actualStartTime" 
+        then
+          logMessage "err" "The variable actualStartTime came up empty. Error accessing YouTube API"
+          logMessage "err" "The bounceCommandOutput was $( echo $bounceCommandOutput | tr '\n' ' ' )"
+        fi
+      fi
+    fi
   fi
 
   # Log that we're done. Note: This message is used both when the bounce
@@ -1322,15 +1439,20 @@ then
     # The end of the day is not close enough. Bounce the stream.
     logMessage "info" "Current video length $(SecondsToTime $secondsSinceCamstart) exceeds maximum of $(SecondsToTime $maxVideoLengthSeconds), bouncing the stream for $longBounceDuration seconds"
 
-    # Perform the bounce, but only if we are not in debug mode.
-    # Use the long bounce duration here, because we are deliberately trying
-    # to split the stream into multiple sections with this bounce.
-    if [ -z "$debugMode" ]
-    then
-      BounceTheStream $longBounceDuration
-    else
-      logMessage "dbg" "(Skipping the actual bounce when in debug mode)"
-    fi
+    # # Perform the bounce, but only if we are not in debug mode.
+    # # Use the long bounce duration here, because we are deliberately trying
+    # # to split the stream into multiple sections with this bounce.
+    # if [ -z "$debugMode" ]
+    # then
+    #   BounceTheStream $longBounceDuration
+    # else
+    #   logMessage "dbg" "(Skipping the actual bounce when in debug mode)"
+    # fi
+
+    # Perform the bounce. Use the long bounce duration here, because we are
+    # deliberately trying to split the stream into multiple sections with
+    # this bounce.
+    BounceTheStream $longBounceDuration
   fi
 fi
 
