@@ -31,7 +31,8 @@
 #
 # Update this value to point to your channel's live stream.
 #
-youTubeUrl="https://www.youtube.com/channel/UC2g9Mp8kzjIV0KfjCIXxgqw/live"
+# youTubeUrl="https://www.youtube.com/channel/UC2g9Mp8kzjIV0KfjCIXxgqw/live"
+youTubeUrl="https://www.youtube.com/user/spryguy1/live"
 
 
 # Title of videos within the stream, to clean up at regular intervals. Only
@@ -90,7 +91,7 @@ desiredStreamVisibility="public"
 # Surveillance Station, in the "Live Broadcast" feature screen.
 #
 # Recommended value: true
-sunriseSunsetControl=true
+sunriseSunsetControl=false
 
 
 # Camera location for using in a Google Search. Can be a zip code, a city name,
